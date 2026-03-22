@@ -9,7 +9,7 @@ import { Emitter, Event } from '../../../../../../base/common/event.js';
 import { Disposable, DisposableStore, MutableDisposable } from '../../../../../../base/common/lifecycle.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import { ITerminalLogService } from '../../../../../../platform/terminal/common/terminal.js';
-import { waitForIdle, waitForIdleWithPromptHeuristics, type ITerminalExecuteStrategy, type ITerminalExecuteStrategyResult } from './executeStrategy.js';
+import { waitForIdle, waitForIdleWithPromptHeuristics, type ITerminalExecuteStrategy, type ITerminalExecuteStrategyResult, waitForOutputFlush } from './executeStrategy.js';
 import type { IMarker as IXtermMarker } from '@xterm/xterm';
 import { ITerminalInstance } from '../../../../terminal/browser/terminal.js';
 import { createAltBufferPromise, setupRecreatingStartMarker, stripCommandEchoAndPrompt } from './strategyHelpers.js';
@@ -139,6 +139,7 @@ export class NoneExecuteStrategy extends Disposable implements ITerminalExecuteS
 			if (token.isCancellationRequested) {
 				throw new CancellationError();
 			}
+			await waitForOutputFlush(this._instance.onData);
 			const endMarker = store.add(xterm.raw.registerMarker());
 
 			// Assemble final result - exit code is not available without shell integration

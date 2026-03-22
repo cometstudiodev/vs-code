@@ -12,7 +12,7 @@ import { IConfigurationService } from '../../../../../../platform/configuration/
 import type { ICommandDetectionCapability } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
 import { ITerminalLogService } from '../../../../../../platform/terminal/common/terminal.js';
 import type { ITerminalInstance } from '../../../../terminal/browser/terminal.js';
-import { trackIdleOnPrompt, type ITerminalExecuteStrategy, type ITerminalExecuteStrategyResult } from './executeStrategy.js';
+import { commandMatchesRequestedId, trackIdleOnPrompt, type ITerminalExecuteStrategy, type ITerminalExecuteStrategyResult, waitForOutputFlush } from './executeStrategy.js';
 import type { IMarker as IXtermMarker } from '@xterm/xterm';
 import { createAltBufferPromise, setupRecreatingStartMarker, stripCommandEchoAndPrompt } from './strategyHelpers.js';
 import { TerminalChatAgentToolsSettingId } from '../../common/terminalChatAgentToolsConfiguration.js';
@@ -54,7 +54,13 @@ export class RichExecuteStrategy extends Disposable implements ITerminalExecuteS
 			const idlePollInterval = this._configurationService.getValue<number>(TerminalChatAgentToolsSettingId.IdlePollInterval) ?? 1000;
 
 			const onDone = Promise.race([
-				Event.toPromise(this._commandDetection.onCommandFinished, store).then(e => {
+				Event.toPromise(Event.filter(this._commandDetection.onCommandFinished, e => {
+					const isMatch = commandMatchesRequestedId(e, commandId);
+					if (!isMatch) {
+						this._log(`Ignoring command-finished event for id=${e.id ?? 'none'}, waiting for requested=${commandId}`);
+					}
+					return isMatch;
+				}), store).then(e => {
 					this._log('onDone via end event');
 					return {
 						'type': 'success',
@@ -106,6 +112,7 @@ export class RichExecuteStrategy extends Disposable implements ITerminalExecuteS
 			if (token.isCancellationRequested) {
 				throw new CancellationError();
 			}
+			await waitForOutputFlush(this._instance.onData);
 			const endMarker = store.add(xterm.raw.registerMarker());
 
 			// Assemble final result

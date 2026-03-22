@@ -11,7 +11,7 @@ import { isNumber } from '../../../../../../base/common/types.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
 import type { ICommandDetectionCapability } from '../../../../../../platform/terminal/common/capabilities/capabilities.js';
 import { ITerminalLogService } from '../../../../../../platform/terminal/common/terminal.js';
-import { trackIdleOnPrompt, waitForIdle, type ITerminalExecuteStrategy, type ITerminalExecuteStrategyResult } from './executeStrategy.js';
+import { commandMatchesRequestedId, trackIdleOnPrompt, waitForIdle, type ITerminalExecuteStrategy, type ITerminalExecuteStrategyResult, waitForOutputFlush } from './executeStrategy.js';
 import type { IMarker as IXtermMarker } from '@xterm/xterm';
 import { ITerminalInstance } from '../../../../terminal/browser/terminal.js';
 import { createAltBufferPromise, setupRecreatingStartMarker, stripCommandEchoAndPrompt } from './strategyHelpers.js';
@@ -65,7 +65,19 @@ export class BasicExecuteStrategy extends Disposable implements ITerminalExecute
 
 			const idlePromptPromise = trackIdleOnPrompt(this._instance, idlePollInterval, store, idlePollInterval);
 			const onDone = Promise.race([
-				Event.toPromise(this._commandDetection.onCommandFinished, store).then(e => {
+				Event.toPromise(Event.filter(this._commandDetection.onCommandFinished, e => {
+					// When no commandId is provided, this basic strategy cannot reliably attach
+					// an id to the command (sendText path), so avoid id-based filtering and
+					// accept the first finished command event.
+					if (!commandId) {
+						return true;
+					}
+					const isMatch = commandMatchesRequestedId(e, commandId);
+					if (!isMatch) {
+						this._log(`Ignoring command-finished event for id=${e.id ?? 'none'}, waiting for requested=${commandId}`);
+					}
+					return isMatch;
+				}), store).then(e => {
 					// When shell integration is basic, it means that the end execution event is
 					// often misfired since we don't have command line verification. Because of this
 					// we make sure the prompt is idle after the end execution event happens.
@@ -160,6 +172,7 @@ export class BasicExecuteStrategy extends Disposable implements ITerminalExecute
 			if (token.isCancellationRequested) {
 				throw new CancellationError();
 			}
+			await waitForOutputFlush(this._instance.onData);
 			const endMarker = store.add(xterm.raw.registerMarker());
 
 			// Assemble final result
