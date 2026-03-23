@@ -2533,7 +2533,7 @@ export class ChatModel extends Disposable implements IChatModel {
 			slashCommand,
 			requestId: request.id,
 			isCompleteAddedRequest,
-			codeBlockInfos: undefined,
+			codeBlockInfos: undefined
 		});
 
 		this._requests.push(request);

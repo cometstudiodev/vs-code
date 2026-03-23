@@ -129,6 +129,7 @@ import { WorkspacePickerActionItem } from './workspacePickerActionItem.js';
 import { ChatContextUsageWidget } from '../../widgetHosts/viewPane/chatContextUsageWidget.js';
 import { Target } from '../../../common/promptSyntax/promptTypes.js';
 import { EnhancedModelPickerActionItem } from './modelPickerActionItem2.js';
+import { findLast } from '../../../../../../base/common/arraysFind.js';
 
 const $ = dom.$;
 
@@ -1171,6 +1172,14 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 	 * that was last used - providing continuity.
 	 */
 	private preselectModelFromSessionHistory(): void {
+		const sessionType = this.getCurrentSessionType();
+		if (!sessionType) {
+			return;
+		}
+		const contribution = this.chatSessionsService.getChatSessionContribution(sessionType);
+		if (contribution?.useRequestToPopulateBuiltInPickers) {
+			return;
+		}
 		const sessionResource = this._widget?.viewModel?.model.sessionResource;
 		const ctx = sessionResource ? this.chatService.getChatSessionFromInternalUri(sessionResource) : undefined;
 		const requiresCustomModels = ctx && this.chatSessionsService.requiresCustomModelsForSessionType(getChatSessionType(ctx.chatSessionResource));
@@ -1190,6 +1199,11 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 				lastModelId = requests[i].modelId;
 				break;
 			}
+		}
+
+		const modeInfo = findLast(requests, req => !!req.modeInfo)?.modeInfo;
+		if (modeInfo && modeInfo.modeInstructions?.uri) {
+			this.setChatMode(modeInfo.modeInstructions.uri.toString());
 		}
 
 		if (!lastModelId) {
@@ -1618,8 +1632,9 @@ export class ChatInputPart extends Disposable implements IHistoryNavigationWidge
 
 		// Handle agent option from session - set initial mode
 		if (customAgentTarget) {
+			const contribution = ctx && this.chatSessionsService.getChatSessionContribution(getChatSessionType(ctx.chatSessionResource));
 			const agentOption = this.chatSessionsService.getSessionOption(ctx.chatSessionResource, agentOptionId);
-			if (typeof agentOption !== 'undefined') {
+			if (typeof agentOption !== 'undefined' && !contribution?.useRequestToPopulateBuiltInPickers) {
 				const agentId = (typeof agentOption === 'string' ? agentOption : agentOption.id) || ChatMode.Agent.id;
 				const currentMode = this._currentModeObservable.get();
 				const isDefaultAgent = agentId === ChatMode.Agent.id;
