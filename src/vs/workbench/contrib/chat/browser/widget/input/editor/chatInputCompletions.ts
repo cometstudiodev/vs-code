@@ -21,7 +21,7 @@ import { ICodeEditor, getCodeEditor, isCodeEditor } from '../../../../../../../e
 import { ICodeEditorService } from '../../../../../../../editor/browser/services/codeEditorService.js';
 import { Position } from '../../../../../../../editor/common/core/position.js';
 import { Range } from '../../../../../../../editor/common/core/range.js';
-import { IWordAtPosition, getWordAtText } from '../../../../../../../editor/common/core/wordHelper.js';
+import { IWordAtPosition } from '../../../../../../../editor/common/core/wordHelper.js';
 import { CompletionContext, CompletionItem, CompletionItemKind, CompletionItemProvider, CompletionList, DocumentSymbol, Location, ProviderResult, SymbolKind, SymbolKinds } from '../../../../../../../editor/common/languages.js';
 import { ITextModel } from '../../../../../../../editor/common/model.js';
 import { ILanguageFeaturesService } from '../../../../../../../editor/common/services/languageFeatures.js';
@@ -68,6 +68,8 @@ import { IChatDebugService } from '../../../../common/chatDebugService.js';
 import { createDebugEventsAttachment } from '../../../chatDebug/chatDebugAttachment.js';
 import { getPromptFileType } from '../../../../common/promptSyntax/config/promptFileLocations.js';
 import { getChatSessionType } from '../../../../common/model/chatUri.js';
+import { computeCompletionRanges, escapeForCharClass, IChatCompletionRangeResult, isEmptyUpToCompletionWord } from './chatInputCompletionUtils.js';
+export { computeCompletionRanges, escapeForCharClass, IChatCompletionRangeResult } from './chatInputCompletionUtils.js';
 
 /**
  * Regex matching a slash command word (e.g. `/foo`). Uses `\p{L}` for Unicode
@@ -861,7 +863,7 @@ interface IVariableCompletionsDetails {
 class BuiltinDynamicCompletions extends Disposable {
 	private static readonly addReferenceCommand = '_addReferenceCmd';
 	private static readonly addDebugEventsSnapshotCommand = '_addDebugEventsSnapshotCmd';
-	private static readonly VariableNameDef = new RegExp(`${chatVariableLeader}[\\w:-]*`, 'g'); // MUST be using `g`-flag
+	private static readonly VariableNameDef = new RegExp(`[${escapeForCharClass(chatVariableLeader)}${escapeForCharClass(chatAgentLeader)}][\\w:-]*`, 'g'); // MUST be using `g`-flag
 
 
 	constructor(
@@ -882,7 +884,7 @@ class BuiltinDynamicCompletions extends Disposable {
 		super();
 
 		// File/Folder completions in one go and m
-		const fileWordPattern = new RegExp(`${chatVariableLeader}[^\\s]*`, 'g');
+		const fileWordPattern = new RegExp(`[${escapeForCharClass(chatVariableLeader)}${escapeForCharClass(chatAgentLeader)}][^\\s]*`, 'g');
 		this.registerVariableCompletions('fileAndFolder', async ({ widget, range }, token) => {
 			if (!widget.supportsFileReferences) {
 				return;
@@ -923,15 +925,16 @@ class BuiltinDynamicCompletions extends Disposable {
 				return;
 			}
 
+			const typedLeader = range.varWord?.word?.charAt(0) === chatAgentLeader ? chatAgentLeader : chatVariableLeader;
 			const basename = this.labelService.getUriBasenameLabel(currentResource);
-			const text = `${chatVariableLeader}file:${basename}:${currentSelection.startLineNumber}-${currentSelection.endLineNumber}`;
+			const text = `${typedLeader}file:${basename}:${currentSelection.startLineNumber}-${currentSelection.endLineNumber}`;
 			const fullRangeText = `:${currentSelection.startLineNumber}:${currentSelection.startColumn}-${currentSelection.endLineNumber}:${currentSelection.endColumn}`;
 			const description = this.labelService.getUriLabel(currentResource, { relative: true }) + fullRangeText;
 
 			const result: CompletionList = { suggestions: [] };
 			result.suggestions.push({
-				label: { label: `${chatVariableLeader}selection`, description },
-				filterText: `${chatVariableLeader}selection`,
+				label: { label: `${typedLeader}selection`, description },
+				filterText: `${typedLeader}selection`,
 				insertText: range.varWord?.endColumn === range.replace.endColumn ? `${text} ` : text,
 				range,
 				kind: CompletionItemKind.Text,
@@ -955,7 +958,7 @@ class BuiltinDynamicCompletions extends Disposable {
 			}
 
 			const result: CompletionList = { suggestions: [] };
-			const range2 = computeCompletionRanges(model, position, new RegExp(`${chatVariableLeader}[^\\s]*`, 'g'), true);
+			const range2 = computeCompletionRanges(model, position, new RegExp(`[${escapeForCharClass(chatVariableLeader)}${escapeForCharClass(chatAgentLeader)}][^\\s]*`, 'g'), true);
 			if (range2) {
 				this.addSymbolEntries(widget, result, range2, token);
 			}
@@ -1034,7 +1037,7 @@ class BuiltinDynamicCompletions extends Disposable {
 	private registerVariableCompletions(debugName: string, provider: (details: IVariableCompletionsDetails, token: CancellationToken) => ProviderResult<CompletionList>, wordPattern: RegExp = BuiltinDynamicCompletions.VariableNameDef) {
 		this._register(this.languageFeaturesService.completionProvider.register({ scheme: Schemas.vscodeChatInput, hasAccessToAllModels: true }, {
 			_debugDisplayName: `chatVarCompletions-${debugName}`,
-			triggerCharacters: [chatVariableLeader],
+			triggerCharacters: [chatVariableLeader, chatAgentLeader],
 			provideCompletionItems: async (model: ITextModel, position: Position, context: CompletionContext, token: CancellationToken) => {
 				const widget = this.chatWidgetService.getWidgetByInputUri(model.uri);
 				if (!widget) {
@@ -1055,9 +1058,11 @@ class BuiltinDynamicCompletions extends Disposable {
 
 	private async addFileAndFolderEntries(widget: IChatWidget, result: CompletionList, info: { insert: Range; replace: Range; varWord: IWordAtPosition | null }, token: CancellationToken) {
 
+		const typedLeader = info.varWord?.word?.charAt(0) === chatAgentLeader ? chatAgentLeader : chatVariableLeader;
+
 		const makeCompletionItem = (resource: URI, kind: FileKind, description?: string, boostPriority?: boolean): CompletionItem => {
 			const basename = this.labelService.getUriBasenameLabel(resource);
-			const text = `${chatVariableLeader}file:${basename}`;
+			const text = `${typedLeader}file:${basename}`;
 			const uriLabel = this.labelService.getUriLabel(resource, { relative: true });
 			const labelDescription = description
 				? localize('fileEntryDescription', '{0} ({1})', uriLabel, description)
@@ -1067,7 +1072,7 @@ class BuiltinDynamicCompletions extends Disposable {
 
 			return {
 				label: { label: basename, description: labelDescription },
-				filterText: `${chatVariableLeader}${basename}`,
+				filterText: `${basename} ${typedLeader}${basename} ${uriLabel}`,
 				insertText: info.varWord?.endColumn === info.replace.endColumn ? `${text} ` : text,
 				range: info,
 				kind: kind === FileKind.FILE ? CompletionItemKind.File : CompletionItemKind.Folder,
@@ -1085,8 +1090,8 @@ class BuiltinDynamicCompletions extends Disposable {
 		};
 
 		let pattern: string | undefined;
-		if (info.varWord?.word && info.varWord.word.startsWith(chatVariableLeader)) {
-			pattern = info.varWord.word.toLowerCase().slice(1); // remove leading #
+		if (info.varWord?.word && (info.varWord.word.startsWith(chatVariableLeader) || info.varWord.word.startsWith(chatAgentLeader))) {
+			pattern = info.varWord.word.toLowerCase().slice(1); // remove leading # or @
 		}
 
 		const seen = new ResourceSet();
@@ -1103,8 +1108,10 @@ class BuiltinDynamicCompletions extends Disposable {
 
 			if (pattern) {
 				// use pattern if available
+				const uriLabel = this.labelService.getUriLabel(resource, { relative: true }).toLowerCase();
 				const basename = this.labelService.getUriBasenameLabel(resource).toLowerCase();
-				if (!isPatternInWord(pattern, 0, pattern.length, basename, 0, basename.length)) {
+				const combined = `${basename} ${uriLabel}`;
+				if (!isPatternInWord(pattern, 0, pattern.length, combined, 0, combined.length)) {
 					continue;
 				}
 			}
@@ -1149,15 +1156,17 @@ class BuiltinDynamicCompletions extends Disposable {
 		const timeoutMs = 100;
 		const stopwatch = new StopWatch();
 
+		const typedLeader = info.varWord?.word?.charAt(0) === chatAgentLeader ? chatAgentLeader : chatVariableLeader;
+
 		const makeSymbolCompletionItem = (symbolItem: { name: string; location: Location; kind: SymbolKind }, pattern: string): CompletionItem => {
-			const text = `${chatVariableLeader}sym:${symbolItem.name}`;
+			const text = `${typedLeader}sym:${symbolItem.name}`;
 			const resource = symbolItem.location.uri;
 			const uriLabel = this.labelService.getUriLabel(resource, { relative: true });
 			const sortText = pattern ? '{' /* after z */ : '|' /* after { */;
 
 			return {
 				label: { label: symbolItem.name, description: uriLabel },
-				filterText: `${chatVariableLeader}${symbolItem.name}`,
+				filterText: `${typedLeader}${symbolItem.name}`,
 				insertText: info.varWord?.endColumn === info.replace.endColumn ? `${text} ` : text,
 				range: info,
 				kind: SymbolKinds.toCompletionKind(symbolItem.kind),
@@ -1175,8 +1184,8 @@ class BuiltinDynamicCompletions extends Disposable {
 		};
 
 		let pattern: string | undefined;
-		if (info.varWord?.word && info.varWord.word.startsWith(chatVariableLeader)) {
-			pattern = info.varWord.word.toLowerCase().slice(1); // remove leading #
+		if (info.varWord?.word && (info.varWord.word.startsWith(chatVariableLeader) || info.varWord.word.startsWith(chatAgentLeader))) {
+			pattern = info.varWord.word.toLowerCase().slice(1); // remove leading # or @
 		}
 
 		const symbolsToAdd: { symbol: DocumentSymbol; uri: URI }[] = [];
@@ -1226,54 +1235,9 @@ class BuiltinDynamicCompletions extends Disposable {
 
 Registry.as<IWorkbenchContributionsRegistry>(WorkbenchExtensions.Workbench).registerWorkbenchContribution(BuiltinDynamicCompletions, LifecyclePhase.Eventually);
 
-export interface IChatCompletionRangeResult {
-	insert: Range;
-	replace: Range;
-	varWord: IWordAtPosition | null;
-}
-
-export function computeCompletionRanges(model: ITextModel, position: Position, reg: RegExp, onlyOnWordStart = false): IChatCompletionRangeResult | undefined {
-	const varWord = getWordAtText(position.column, reg, model.getLineContent(position.lineNumber), 0);
-	if (!varWord && model.getWordUntilPosition(position).word) {
-		// inside a "normal" word
-		return;
-	}
-
-	if (!varWord && position.column > 1) {
-		const textBefore = model.getValueInRange(new Range(position.lineNumber, position.column - 1, position.lineNumber, position.column));
-		if (textBefore !== ' ') {
-			return;
-		}
-	}
-
-	if (varWord && onlyOnWordStart) {
-		const wordBefore = model.getWordUntilPosition({ lineNumber: position.lineNumber, column: varWord.startColumn });
-		if (wordBefore.word) {
-			// inside a word
-			return;
-		}
-	}
-
-	let insert: Range;
-	let replace: Range;
-	if (!varWord) {
-		insert = replace = Range.fromPositions(position);
-	} else {
-		insert = new Range(position.lineNumber, varWord.startColumn, position.lineNumber, position.column);
-		replace = new Range(position.lineNumber, varWord.startColumn, position.lineNumber, varWord.endColumn);
-	}
-
-	return { insert, replace, varWord };
-}
-
-function isEmptyUpToCompletionWord(model: ITextModel, rangeResult: IChatCompletionRangeResult): boolean {
-	const startToCompletionWordStart = new Range(1, 1, rangeResult.replace.startLineNumber, rangeResult.replace.startColumn);
-	return !!model.getValueInRange(startToCompletionWordStart).match(/^\s*$/);
-}
-
 class ToolCompletions extends Disposable {
 
-	private static readonly VariableNameDef = new RegExp(`(?<=^|\\s)${chatVariableLeader}\\w*`, 'g'); // MUST be using `g`-flag
+	private static readonly VariableNameDef = new RegExp(`(?<=^|\\s)[${escapeForCharClass(chatVariableLeader)}${escapeForCharClass(chatAgentLeader)}]\\w*`, 'g'); // MUST be using `g`-flag
 
 	constructor(
 		@ILanguageFeaturesService private readonly languageFeaturesService: ILanguageFeaturesService,
@@ -1284,7 +1248,7 @@ class ToolCompletions extends Disposable {
 
 		this._register(this.languageFeaturesService.completionProvider.register({ scheme: Schemas.vscodeChatInput, hasAccessToAllModels: true }, {
 			_debugDisplayName: 'chatVariables',
-			triggerCharacters: [chatVariableLeader],
+			triggerCharacters: [chatVariableLeader, chatAgentLeader],
 			provideCompletionItems: async (model: ITextModel, position: Position, _context: CompletionContext, _token: CancellationToken) => {
 				const widget = this.chatWidgetService.getWidgetByInputUri(model.uri);
 				if (!widget) {
@@ -1314,6 +1278,8 @@ class ToolCompletions extends Disposable {
 					}
 				}
 
+				const typedLeader = range.varWord?.word?.charAt(0) === chatAgentLeader ? chatAgentLeader : chatVariableLeader;
+				const pattern = range.varWord?.word ? range.varWord.word.toLowerCase().slice(1) : '';
 				const suggestions: CompletionItem[] = [];
 
 
@@ -1343,12 +1309,20 @@ class ToolCompletions extends Disposable {
 						continue;
 					}
 
-					const withLeader = `${chatVariableLeader}${name}`;
+					if (pattern) {
+						const lowerName = name.toLowerCase();
+						if (!isPatternInWord(pattern, 0, pattern.length, lowerName, 0, lowerName.length)) {
+							continue;
+						}
+					}
+
+					const withLeader = `${typedLeader}${name}`;
 					suggestions.push({
 						label: withLeader,
 						range,
 						detail,
 						documentation,
+						filterText: `${typedLeader}${name}`,
 						insertText: withLeader + ' ',
 						kind: CompletionItemKind.Tool,
 					});
